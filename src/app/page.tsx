@@ -14,6 +14,8 @@ export default function Page() {
     currentPlayer,
     winner,
     moves,
+    board,
+    permBlock,
     boardSize,
     undo,
     reset,
@@ -29,6 +31,7 @@ export default function Page() {
     cancelSkill,
     frozenTurns,
     extraTurns,
+    usedMountainBreakerSinceLastRebirth,
   } = useGameStore();
   const [open, setOpen] = React.useState(false);
   const [sizeDraft, setSizeDraft] = React.useState(boardSize);
@@ -51,7 +54,11 @@ const [hoveredSkill, setHoveredSkill] = React.useState<SkillId | null>(null);
   const SkillButton = ({ id }: { id: SkillId }) => {
     const def = SKILL_DEFINITIONS[id];
     const cd = skillCooldowns[currentPlayer][id] || 0;
-    const disabled = !!winner || cd > 0 || !!pendingSkill || (aiEnabled && currentPlayer === aiPlayer);
+    const validMyCount = board.reduce((acc, rowArr, r) => acc + rowArr.reduce((acc2, cell, c) => acc2 + (cell === currentPlayer && !permBlock[`${r},${c}`] ? 1 : 0), 0), 0);
+    const hasDestroyed = Object.keys(permBlock).length > 0;
+    const rebirthInvalid = id === 'rebirth' && (!hasDestroyed || validMyCount < 2);
+    const mbLockedByRule = id === 'mountainBreaker' && usedMountainBreakerSinceLastRebirth[currentPlayer];
+    const disabled = !!winner || cd > 0 || !!pendingSkill || (aiEnabled && currentPlayer === aiPlayer) || rebirthInvalid || mbLockedByRule;
     return (
       <Button
         variant={cd > 0 ? 'secondary' : 'default'}
@@ -74,8 +81,10 @@ const [hoveredSkill, setHoveredSkill] = React.useState<SkillId | null>(null);
       <main className="mx-auto max-w-5xl px-6 py-10">
         <Card>
           <CardHeader>
-            <CardTitle>五子棋 Gomoku</CardTitle>
-            <CardDescription>Zustand 管理状态，shadcn 风格组件，Tailwind v4 样式</CardDescription>
+            <CardTitle>技能五子棋 - Skill Gomoku</CardTitle>
+            <CardDescription>
+              技能五子棋，就是在传统的五子棋，加入技能，好好玩！要爆了！
+            </CardDescription>
           </CardHeader>
           <CardContent>
             <div className="grid gap-6 md:grid-cols-[1fr_320px]">
@@ -134,13 +143,26 @@ const [hoveredSkill, setHoveredSkill] = React.useState<SkillId | null>(null);
                       {(['sandstorm','stillwater','mountainBreaker','rebirth','shift'] as SkillId[]).map((id) => {
                         const def = SKILL_DEFINITIONS[id];
                         const cd = skillCooldowns[currentPlayer][id] || 0;
-                        const targetLabel = def.target === 'none'
-                          ? '无需选点，点击即生效'
-                          : def.target === 'stone'
-                            ? '在棋盘上点击敌方棋子'
-                            : def.target === 'point'
-                              ? '在棋盘上点击一个交叉点'
-                              : '先点击敌子，再点击目标交叉点';
+                        const validMyCount = board.reduce((acc, rowArr, r) => acc + rowArr.reduce((acc2, cell, c) => acc2 + (cell === currentPlayer && !permBlock[`${r},${c}`] ? 1 : 0), 0), 0);
+                        const hasDestroyed = Object.keys(permBlock).length > 0;
+                        const mbLockedByRule = id === 'mountainBreaker' && usedMountainBreakerSinceLastRebirth[currentPlayer];
+                        const targetLabel = id === 'rebirth'
+                          ? (!hasDestroyed
+                              ? '需有摧毁区域方可使用'
+                              : (validMyCount > 2
+                                  ? '选择两枚我方棋子（摧毁区中的棋子不可选）'
+                                  : '我方仅剩两枚时自动生效'))
+                          : id === 'mountainBreaker'
+                            ? (mbLockedByRule
+                                ? '本方已摧毁过区域，需东山再起并冷却结束后再用'
+                                : '点击棋子或交叉点，摧毁其周边 6×6 区域（每方仅可选择一片）')
+                            : def.target === 'none'
+                              ? '无需选点，点击即生效'
+                              : def.target === 'stone'
+                                ? '在棋盘上点击敌方棋子'
+                                : def.target === 'point'
+                                  ? '在棋盘上点击一个交叉点'
+                                  : '先点击敌子，再点击目标交叉点';
                         return (
                           <Tooltip key={id}>
                             <TooltipTrigger asChild>
@@ -161,9 +183,9 @@ const [hoveredSkill, setHoveredSkill] = React.useState<SkillId | null>(null);
                       })}
                     </TooltipProvider>
                   </div>
-<p className="mt-3 text-xs text-neutral-600 dark:text-neutral-400">
-  说明：鼠标悬停技能按钮查看详细说明；部分技能需在棋盘上选点或选子。被封锁区域不可落子。
-</p>
+                  <p className="mt-3 text-xs text-neutral-600 dark:text-neutral-400">
+                    说明：鼠标悬停技能按钮查看详细说明；部分技能需在棋盘上选点或选子。被封锁区域不可落子。
+                  </p>
                 </div>
 
                 <div className="flex flex-wrap gap-3">

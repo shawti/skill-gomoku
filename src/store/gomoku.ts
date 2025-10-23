@@ -31,6 +31,7 @@ interface GameState {
   skillCooldowns: Record<Player, Record<SkillId, number>>;
   pendingSkill: { id: SkillId } | null;
   skillTargetBuffer: Position[];
+  usedMountainBreakerSinceLastRebirth: Record<Player, boolean>;
   placeStone: (row: number, col: number) => void;
   reset: (size?: number) => void;
   undo: () => void;
@@ -383,6 +384,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   skillCooldowns: { black: { sandstorm: 0, stillwater: 0, mountainBreaker: 0, rebirth: 0, shift: 0 }, white: { sandstorm: 0, stillwater: 0, mountainBreaker: 0, rebirth: 0, shift: 0 } },
   pendingSkill: null,
   skillTargetBuffer: [],
+  usedMountainBreakerSinceLastRebirth: { black: false, white: false },
   isBlocked: (row, col) => {
     const key = `${row},${col}`;
     const { tempBlock, permBlock } = get();
@@ -394,7 +396,15 @@ export const useGameStore = create<GameState>((set, get) => ({
     if (winner || pendingSkill || board[row][col] !== null || isBlocked(row, col)) return;
     const nextBoard = board.map((rowArr) => rowArr.slice());
     nextBoard[row][col] = currentPlayer;
-    const res = checkWin(nextBoard, row, col, currentPlayer);
+    // 在摧毁区上的棋子视为无效，进行胜利判断前清除
+    const perm = get().permBlock;
+    const maskedBoard = nextBoard.map((r) => r.slice());
+    for (const k of Object.keys(perm)) {
+      const [rs, cs] = k.split(",");
+      const rr = Number(rs), cc = Number(cs);
+      if (inBounds(maskedBoard.length, rr, cc)) maskedBoard[rr][cc] = null;
+    }
+    const res = checkWin(maskedBoard, row, col, currentPlayer);
     // 计算下一执子（考虑额外回合与冻结）
     const nextExtra = { ...extraTurns };
     const nextFrozen = { ...frozenTurns };
@@ -459,6 +469,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       skillCooldowns: { black: { sandstorm: 0, stillwater: 0, mountainBreaker: 0, rebirth: 0, shift: 0 }, white: { sandstorm: 0, stillwater: 0, mountainBreaker: 0, rebirth: 0, shift: 0 } },
       pendingSkill: null,
       skillTargetBuffer: [],
+      usedMountainBreakerSinceLastRebirth: { black: false, white: false },
     });
   },
   setBoardSize: (size) => {
@@ -468,17 +479,78 @@ export const useGameStore = create<GameState>((set, get) => ({
   setAiEnabled: (enabled) => set({ aiEnabled: enabled }),
   setAiPlayer: (player) => set({ aiPlayer: player }),
   triggerSkill: (id: SkillId) => {
-    const { currentPlayer, skillCooldowns, pendingSkill, winner, aiEnabled, aiPlayer, moves } = get();
+    const { currentPlayer, skillCooldowns, pendingSkill, winner, aiEnabled, aiPlayer, board, permBlock } = get();
     if (winner) return;
     if (aiEnabled && currentPlayer === aiPlayer) return; // AI 回合不可用技能
     if (pendingSkill) return; // 已在选中状态
     if (skillCooldowns[currentPlayer][id] > 0) return; // 冷却中
+    if (id === "mountainBreaker" && get().usedMountainBreakerSinceLastRebirth[currentPlayer]) return; // 本方已摧毁过区域，需重生后才可再次使用
     const def = SKILL_DEFINITIONS[id];
+
+    // 特殊：东山再起需摧毁区且根据己子数量决定是否选子
+    if (id === "rebirth") {
+      const destroyedCount = Object.keys(permBlock).length;
+      if (destroyedCount === 0) return; // 无摧毁区域，不能使用
+      const myPositions: Position[] = [];
+      for (let r = 0; r < board.length; r++) {
+        for (let c = 0; c < board[r].length; c++) {
+          const key = `${r},${c}`;
+          if (board[r][c] === currentPlayer && !permBlock[key]) myPositions.push({ row: r, col: c });
+        }
+      }
+      if (myPositions.length < 2) return; // 己子不足两枚，不能使用（摧毁区内棋子不计入）
+      if (myPositions.length === 2) {
+        const nextBoard = board.map((row) => row.slice());
+        for (const p of myPositions) {
+          nextBoard[p.row][p.col] = null;
+        }
+        set((s) => {
+          const baseCooldowns = { black: { ...s.skillCooldowns.black }, white: { ...s.skillCooldowns.white } };
+          baseCooldowns[currentPlayer].rebirth = SKILL_DEFINITIONS.rebirth.cooldown;
+          const extra = { ...s.extraTurns };
+          const frozen = { ...s.frozenTurns };
+          let nextPlayer: Player = currentPlayer === "black" ? "white" : "black";
+          if (extra[currentPlayer] > 0) {
+            extra[currentPlayer] -= 1;
+            nextPlayer = currentPlayer;
+          } else if (frozen[nextPlayer] > 0) {
+            frozen[nextPlayer] -= 1;
+            nextPlayer = currentPlayer;
+          }
+          const nextCooldowns = { black: { ...baseCooldowns.black }, white: { ...baseCooldowns.white } };
+          for (const k of Object.keys(nextCooldowns[nextPlayer])) {
+            const kid = k as SkillId;
+            nextCooldowns[nextPlayer][kid] = Math.max(0, nextCooldowns[nextPlayer][kid] - 1);
+          }
+          const nextTemp: Record<string, number> = { ...(s.tempBlock || {}) };
+          for (const tk of Object.keys(nextTemp)) {
+            const v = nextTemp[tk];
+            if (v <= 1) delete nextTemp[tk]; else nextTemp[tk] = v - 1;
+          }
+          return {
+            board: nextBoard,
+            permBlock: {}, // 恢复摧毁区域
+            skillCooldowns: nextCooldowns,
+            tempBlock: nextTemp,
+            extraTurns: extra,
+            frozenTurns: frozen,
+            usedMountainBreakerSinceLastRebirth: { ...s.usedMountainBreakerSinceLastRebirth, [currentPlayer]: false },
+            currentPlayer: nextPlayer,
+          };
+        });
+        return;
+      } else {
+        set({ pendingSkill: { id }, skillTargetBuffer: [] });
+        return;
+      }
+    }
+
     // 目标型技能：进入选中模式
     if (def.target !== "none") {
       set({ pendingSkill: { id }, skillTargetBuffer: [] });
       return;
     }
+
     // 立即生效型技能并结束本回合
     if (id === "stillwater") {
       set((s) => {
@@ -501,55 +573,13 @@ export const useGameStore = create<GameState>((set, get) => ({
           nextCooldowns[nextPlayer][kid] = Math.max(0, nextCooldowns[nextPlayer][kid] - 1);
         }
         const nextTemp: Record<string, number> = { ...(s.tempBlock || {}) };
-        for (const k of Object.keys(nextTemp)) {
-          const v = nextTemp[k];
-          if (v <= 1) delete nextTemp[k]; else nextTemp[k] = v - 1;
+        for (const tk of Object.keys(nextTemp)) {
+          const v = nextTemp[tk];
+          if (v <= 1) delete nextTemp[tk]; else nextTemp[tk] = v - 1;
         }
         return {
           frozenTurns: nextFrozen,
           extraTurns: nextExtra,
-          skillCooldowns: nextCooldowns,
-          tempBlock: nextTemp,
-          currentPlayer: nextPlayer,
-        };
-      });
-      return;
-    }
-    if (id === "rebirth") {
-      const myMoves = moves.filter((m) => m.player === currentPlayer);
-      if (myMoves.length < 2) return;
-      const { board } = get();
-      const lastTwo = myMoves.slice(-2);
-      const nextBoard = board.map((r) => r.slice());
-      for (const m of lastTwo) {
-        nextBoard[m.row][m.col] = null;
-      }
-      set((s) => {
-        const baseCooldowns = { black: { ...s.skillCooldowns.black }, white: { ...s.skillCooldowns.white } };
-        baseCooldowns[currentPlayer].rebirth = SKILL_DEFINITIONS.rebirth.cooldown;
-        const extra = { ...s.extraTurns };
-        const frozen = { ...s.frozenTurns };
-        let nextPlayer: Player = currentPlayer === "black" ? "white" : "black";
-        if (extra[currentPlayer] > 0) {
-          extra[currentPlayer] -= 1;
-          nextPlayer = currentPlayer;
-        } else if (frozen[nextPlayer] > 0) {
-          frozen[nextPlayer] -= 1;
-          nextPlayer = currentPlayer;
-        }
-        const nextCooldowns = { black: { ...baseCooldowns.black }, white: { ...baseCooldowns.white } };
-        for (const k of Object.keys(nextCooldowns[nextPlayer])) {
-          const kid = k as SkillId;
-          nextCooldowns[nextPlayer][kid] = Math.max(0, nextCooldowns[nextPlayer][kid] - 1);
-        }
-        const nextTemp: Record<string, number> = { ...(s.tempBlock || {}) };
-        for (const k of Object.keys(nextTemp)) {
-          const v = nextTemp[k];
-          if (v <= 1) delete nextTemp[k]; else nextTemp[k] = v - 1;
-        }
-        return {
-          board: nextBoard,
-          permBlock: {},
           skillCooldowns: nextCooldowns,
           tempBlock: nextTemp,
           currentPlayer: nextPlayer,
@@ -568,6 +598,7 @@ export const useGameStore = create<GameState>((set, get) => ({
     const key = `${row},${col}`;
     if (id === "sandstorm") {
       const opponent: Player = currentPlayer === "black" ? "white" : "black";
+      if (get().permBlock[key]) return;
       if (board[row][col] === opponent) {
         const nextBoard = board.map((r) => r.slice());
         nextBoard[row][col] = null;
@@ -610,6 +641,58 @@ export const useGameStore = create<GameState>((set, get) => ({
         });
       }
     }
+    if (id === "rebirth") {
+      const { permBlock } = get();
+      if (permBlock[key]) return; // 摧毁区中的棋子不可选
+      if (board[row][col] !== currentPlayer) return;
+      if (skillTargetBuffer.some((p) => p.row === row && p.col === col)) return;
+      const nextBuf = [...skillTargetBuffer, { row, col }];
+      if (nextBuf.length < 2) {
+        set({ skillTargetBuffer: nextBuf });
+        return;
+      }
+      const nextBoard = board.map((r) => r.slice());
+      for (const p of nextBuf) {
+        nextBoard[p.row][p.col] = null;
+      }
+      set((s) => {
+        const baseCooldowns = { black: { ...s.skillCooldowns.black }, white: { ...s.skillCooldowns.white } };
+        baseCooldowns[currentPlayer].rebirth = SKILL_DEFINITIONS.rebirth.cooldown;
+        const extra = { ...s.extraTurns };
+        const frozen = { ...s.frozenTurns };
+        let nextPlayer: Player = currentPlayer === "black" ? "white" : "black";
+        if (extra[currentPlayer] > 0) {
+          extra[currentPlayer] -= 1;
+          nextPlayer = currentPlayer;
+        } else if (frozen[nextPlayer] > 0) {
+          frozen[nextPlayer] -= 1;
+          nextPlayer = currentPlayer;
+        }
+        const nextCooldowns = { black: { ...baseCooldowns.black }, white: { ...baseCooldowns.white } };
+        for (const k of Object.keys(nextCooldowns[nextPlayer])) {
+          const kid = k as SkillId;
+          nextCooldowns[nextPlayer][kid] = Math.max(0, nextCooldowns[nextPlayer][kid] - 1);
+        }
+        const nextTemp: Record<string, number> = { ...(s.tempBlock || {}) };
+        for (const tk of Object.keys(nextTemp)) {
+          const v = nextTemp[tk];
+          if (v <= 1) delete nextTemp[tk]; else nextTemp[tk] = v - 1;
+        }
+        return {
+          board: nextBoard,
+          permBlock: {}, // 恢复摧毁区域
+          skillCooldowns: nextCooldowns,
+          tempBlock: nextTemp,
+          pendingSkill: null,
+          skillTargetBuffer: [],
+          extraTurns: extra,
+          frozenTurns: frozen,
+          usedMountainBreakerSinceLastRebirth: { ...s.usedMountainBreakerSinceLastRebirth, [currentPlayer]: false },
+          currentPlayer: nextPlayer,
+        };
+      });
+      return;
+    }
     if (id === "mountainBreaker") {
       const n = get().boardSize;
       const halfH = 3, halfW = 3;
@@ -651,6 +734,7 @@ export const useGameStore = create<GameState>((set, get) => ({
           frozenTurns: frozen,
           skillCooldowns: nextCooldowns,
           tempBlock: nextTemp,
+          usedMountainBreakerSinceLastRebirth: { ...s.usedMountainBreakerSinceLastRebirth, [currentPlayer]: true },
           currentPlayer: nextPlayer,
         };
       });
@@ -659,6 +743,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       const buf = [...skillTargetBuffer];
       if (buf.length === 0) {
         const opponent: Player = currentPlayer === "black" ? "white" : "black";
+        if (get().permBlock[key]) return;
         if (board[row][col] === opponent) {
           set({ skillTargetBuffer: [{ row, col }] });
         }
@@ -737,7 +822,15 @@ export const useGameStore = create<GameState>((set, get) => ({
     for (const { row, col } of empties) {
       const nextBoard = board.map((r) => r.slice());
       nextBoard[row][col] = aiPlayer;
-      const res = checkWin(nextBoard, row, col, aiPlayer);
+      // 胜利判断使用有效棋盘（摧毁区的棋子无效）
+      const perm = get().permBlock;
+      const maskedBoard = nextBoard.map((r) => r.slice());
+      for (const k of Object.keys(perm)) {
+        const [rs, cs] = k.split(",");
+        const rr = Number(rs), cc = Number(cs);
+        if (inBounds(maskedBoard.length, rr, cc)) maskedBoard[rr][cc] = null;
+      }
+      const res = checkWin(maskedBoard, row, col, aiPlayer);
       if (res.winner === aiPlayer) {
         get().placeStone(row, col);
         return;
@@ -748,14 +841,28 @@ export const useGameStore = create<GameState>((set, get) => ({
     for (const { row, col } of empties) {
       const nextBoard = board.map((r) => r.slice());
       nextBoard[row][col] = opponent;
-      const res = checkWin(nextBoard, row, col, opponent);
+      const perm = get().permBlock;
+      const maskedBoard = nextBoard.map((r) => r.slice());
+      for (const k of Object.keys(perm)) {
+        const [rs, cs] = k.split(",");
+        const rr = Number(rs), cc = Number(cs);
+        if (inBounds(maskedBoard.length, rr, cc)) maskedBoard[rr][cc] = null;
+      }
+      const res = checkWin(maskedBoard, row, col, opponent);
       if (res.winner === opponent) {
         get().placeStone(row, col);
         return;
       }
     }
     // 3) alpha-beta search fallback
-    const best = findBestMoveAlphaBeta(board, aiPlayer, isBlocked);
+    const perm = get().permBlock;
+    const effectiveBoard = board.map((r) => r.slice());
+    for (const k of Object.keys(perm)) {
+      const [rs, cs] = k.split(",");
+      const rr = Number(rs), cc = Number(cs);
+      if (inBounds(effectiveBoard.length, rr, cc)) effectiveBoard[rr][cc] = null;
+    }
+    const best = findBestMoveAlphaBeta(effectiveBoard, aiPlayer, isBlocked);
     if (best && !isBlocked(best.row, best.col)) {
       get().placeStone(best.row, best.col);
     }

@@ -16,6 +16,7 @@ export function GomokuBoard() {
     applySkillTarget,
     skillTargetBuffer,
     currentPlayer,
+    permBlock,
   } = useGameStore();
 
   // 计算高亮连线集合
@@ -124,9 +125,16 @@ export function GomokuBoard() {
             if (!cell) return null;
             const { x, y } = toCoord(r, c);
             const isWinning = winningSet.has(`${r}:${c}`);
-            const fill = cell === "black" ? "#000" : "#fff";
+            const key = `${r},${c}`;
+            const isDestroyed = !!permBlock[key];
+            const fill = cell === "black" ? (isDestroyed ? "#6b7280" : "#000") : (isDestroyed ? "#e5e7eb" : "#fff");
             const radius = cell === "white" ? stoneRadiusBase * 0.98 : stoneRadiusBase; // 白子微调抵消视觉膨胀
-            const canClickStone = !!pendingId && (pendingId === 'sandstorm' || pendingId === 'shift') && cell === opponent && !winner;
+            const strokeColor = isDestroyed ? "#9ca3af" : "#6b7280";
+            const canClickStone = !!pendingId && !winner && (
+              (pendingId === 'sandstorm' || pendingId === 'shift') ? (cell === opponent && !isDestroyed) :
+              (pendingId === 'rebirth' ? (cell === currentPlayer && !isDestroyed) :
+              (pendingId === 'mountainBreaker' ? (cell !== null && !isDestroyed) : false))
+            );
             const selected = skillTargetBuffer.length === 1 && skillTargetBuffer[0].row === r && skillTargetBuffer[0].col === c;
             return (
               <g key={`stone-${r}-${c}`}>
@@ -135,7 +143,8 @@ export function GomokuBoard() {
                   cy={y}
                   r={radius}
                   fill={fill}
-                  stroke="#6b7280"
+                  fillOpacity={isDestroyed ? 0.9 : 1}
+                  stroke={strokeColor}
                   strokeWidth={Math.max(0.35, steps * 0.03)}
                 />
                 {isWinning && (
@@ -159,7 +168,7 @@ export function GomokuBoard() {
                   />
                 )}
                 {canClickStone && (
-                  // 增加点击命中区（透明），用于技能选择敌子
+                  // 增加点击命中区（透明），用于技能选择敌子/己子
                   <rect
                     x={x - steps * 0.45}
                     y={y - steps * 0.45}
