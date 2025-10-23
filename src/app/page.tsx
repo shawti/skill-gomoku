@@ -6,7 +6,7 @@ import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter }
 import { Dialog, DialogTrigger, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogClose } from "@/components/ui/dialog";
 import GomokuBoard from "@/components/gomoku/Board";
 import { useGameStore, SKILL_DEFINITIONS, type SkillId } from "@/store/gomoku";
-import { RotateCcw, RefreshCcw, Settings, Wand2, XCircle } from "lucide-react";
+import { RotateCcw, RefreshCcw, Settings, Wand2, XCircle, Volume2, VolumeX } from "lucide-react";
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "@/components/ui/tooltip";
 
 export default function Page() {
@@ -38,6 +38,43 @@ export default function Page() {
   const [modeDraft, setModeDraft] = React.useState<'pvp' | 'pve'>(aiEnabled ? 'pve' : 'pvp');
   const [aiPlayerDraft, setAiPlayerDraft] = React.useState(aiPlayer);
 const [hoveredSkill, setHoveredSkill] = React.useState<SkillId | null>(null);
+const [bgmEnabled, setBgmEnabled] = React.useState(true);
+const bgmRef = React.useRef<HTMLAudioElement | null>(null);
+const interactionPlayRef = React.useRef<(() => void) | undefined>(undefined);
+React.useEffect(() => {
+  if (!bgmRef.current) {
+    const a = new Audio('/skill-gomoku.mp3');
+    a.loop = true;
+    a.volume = 0.15;
+    bgmRef.current = a;
+  }
+  const audio = bgmRef.current!;
+  if (bgmEnabled) {
+    audio.play().catch(() => {
+      const handler = () => {
+        if (!bgmEnabled) return;
+        audio.play().catch(() => {});
+      };
+      interactionPlayRef.current = handler;
+      window.addEventListener('click', handler, { once: true });
+    });
+  } else {
+    audio.pause();
+  }
+  return () => {
+    const h = interactionPlayRef.current;
+    if (h) {
+      window.removeEventListener('click', h);
+      interactionPlayRef.current = undefined;
+    }
+  };
+}, [bgmEnabled]);
+React.useEffect(() => {
+  return () => {
+    bgmRef.current?.pause();
+    bgmRef.current = null;
+  };
+}, []);
 
   React.useEffect(() => {
     if (aiEnabled && currentPlayer === aiPlayer && !winner) {
@@ -79,7 +116,22 @@ const [hoveredSkill, setHoveredSkill] = React.useState<SkillId | null>(null);
   return (
     <div className="min-h-screen w-full bg-gradient-to-b from-zinc-50 to-zinc-100 dark:from-black dark:to-neutral-900">
       <main className="mx-auto max-w-5xl px-6 py-10">
-        <Card>
+        <Card className="relative">
+          <div className="absolute top-3 right-3">
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label={bgmEnabled ? '关闭背景音乐' : '开启背景音乐'}
+              onClick={() => setBgmEnabled((prev) => !prev)}
+              title={bgmEnabled ? '关闭背景音乐' : '开启背景音乐'}
+            >
+              {bgmEnabled ? (
+                <Volume2 className="h-4 w-4" />
+              ) : (
+                <VolumeX className="h-4 w-4" />
+              )}
+            </Button>
+          </div>
           <CardHeader>
             <CardTitle>技能五子棋 - Skill Gomoku</CardTitle>
             <CardDescription>
