@@ -58,34 +58,44 @@ React.useEffect(() => {
   const audio = bgmRef.current;
   if (!audio) return;
 
+  const events: Array<keyof DocumentEventMap> = ['pointerdown', 'click', 'keydown', 'touchstart'];
+
+  const detach = () => {
+    const h = interactionPlayRef.current as EventListener | undefined;
+    if (h) {
+      events.forEach((e) => document.removeEventListener(e, h));
+      interactionPlayRef.current = undefined;
+    }
+  };
+
+  const attachOnce = () => {
+    const handler = () => {
+      if (!bgmEnabled || !bgmRef.current) return;
+      const a = bgmRef.current;
+      a.muted = false;
+      a.play().catch(() => {});
+      detach();
+    };
+    detach();
+    interactionPlayRef.current = handler as unknown as (() => void);
+    events.forEach((e) => document.addEventListener(e, handler as EventListener, { once: true }));
+  };
+
   if (bgmEnabled) {
     audio.play().catch(() => {
-      const handler = () => {
-        if (!bgmEnabled) return;
-        audio.play().catch(() => {});
-      };
-      // remove previous handler if exists
-      if (interactionPlayRef.current) {
-        window.removeEventListener('pointerdown', interactionPlayRef.current);
-        interactionPlayRef.current = undefined;
-      }
-      interactionPlayRef.current = handler;
-      window.addEventListener('pointerdown', handler, { once: true });
+      // 预热：尝试静音播放以满足部分浏览器的自动播放策略
+      audio.muted = true;
+      audio.play().catch(() => {});
+      // 在首次交互时取消静音并真正开始播放
+      attachOnce();
     });
   } else {
     audio.pause();
-    if (interactionPlayRef.current) {
-      window.removeEventListener('pointerdown', interactionPlayRef.current);
-      interactionPlayRef.current = undefined;
-    }
+    detach();
   }
 
   return () => {
-    const h = interactionPlayRef.current;
-    if (h) {
-      window.removeEventListener('pointerdown', h);
-      interactionPlayRef.current = undefined;
-    }
+    detach();
   };
 }, [bgmEnabled]);
 React.useEffect(() => {
