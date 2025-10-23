@@ -6,6 +6,15 @@ export type Cell = Player | null;
 export interface Move { row: number; col: number; player: Player }
 export interface Position { row: number; col: number }
 
+export type SkillId = "sandstorm" | "stillwater" | "mountainBreaker" | "rebirth" | "shift";
+export const SKILL_DEFINITIONS: Record<SkillId, { id: SkillId; name: string; cooldown: number; description: string; target?: "none" | "stone" | "point" | "stone_then_point" }> = {
+  sandstorm: { id: "sandstorm", name: "飞沙走石", cooldown: 4, description: "选中敌方棋子，使其消失，并封锁该位一回合。", target: "stone" },
+  stillwater: { id: "stillwater", name: "静如止水", cooldown: 6, description: "冻结敌方一回合，自己连续下两手。", target: "none" },
+  mountainBreaker: { id: "mountainBreaker", name: "力拔山兮", cooldown: 10, description: "选定 6x6 区域摧毁，无法落子。", target: "point" },
+  rebirth: { id: "rebirth", name: "东山再起", cooldown: 6, description: "牺牲两枚己子，恢复全部摧毁区域。", target: "none" },
+  shift: { id: "shift", name: "调呈离山", cooldown: 5, description: "移动敌方棋子到新位置并封锁原点一回合。", target: "stone_then_point" },
+};
+
 interface GameState {
   boardSize: number;
   board: Cell[][];
@@ -15,6 +24,13 @@ interface GameState {
   winningLine: Position[];
   aiEnabled: boolean;
   aiPlayer: Player;
+  tempBlock: Record<string, number>; // key: "r,c"，剩余回合数（每回合-1）
+  permBlock: Record<string, boolean>; // 永久封锁（摧毁区域）
+  frozenTurns: Record<Player, number>; // 玩家被冻结的回合数
+  extraTurns: Record<Player, number>; // 玩家额外回合数
+  skillCooldowns: Record<Player, Record<SkillId, number>>;
+  pendingSkill: { id: SkillId } | null;
+  skillTargetBuffer: Position[];
   placeStone: (row: number, col: number) => void;
   reset: (size?: number) => void;
   undo: () => void;
@@ -22,6 +38,10 @@ interface GameState {
   setAiEnabled: (enabled: boolean) => void;
   setAiPlayer: (player: Player) => void;
   makeAiMove: () => void;
+  isBlocked: (row: number, col: number) => boolean;
+  triggerSkill: (id: SkillId) => void;
+  cancelSkill: () => void;
+  applySkillTarget: (row: number, col: number) => void;
 }
 
 const createEmptyBoard = (n: number): Cell[][] =>
@@ -188,7 +208,7 @@ function evaluateBoard(board: Cell[][], ai: Player): number {
   return total;
 }
 
-function getCandidatePositions(board: Cell[][]): Position[] {
+function getCandidatePositions(board: Cell[][], isBlockedFn?: (r: number, c: number) => boolean): Position[] {
   const n = board.length;
   const res: Position[] = [];
   let hasStone = false;
@@ -201,6 +221,7 @@ function getCandidatePositions(board: Cell[][]): Position[] {
   for (let r = 0; r < n; r++) {
     for (let c = 0; c < n; c++) {
       if (board[r][c] !== null) continue;
+      if (isBlockedFn && isBlockedFn(r, c)) continue;
       if (!hasStone) { res.push({ row: r, col: c }); continue; }
       let near = false;
       for (let dr = -2; dr <= 2 && !near; dr++) {
@@ -234,6 +255,7 @@ function alphaBeta(
   beta: number,
   currentPlayer: Player,
   ai: Player,
+  isBlockedFn: (r: number, c: number) => boolean,
   lastMove?: { row: number; col: number; player: Player }
 ): number {
   if (lastMove) {
@@ -246,7 +268,7 @@ function alphaBeta(
     return evaluateBoard(board, ai);
   }
   const n = board.length;
-  const candidates = getCandidatePositions(board);
+  const candidates = getCandidatePositions(board, isBlockedFn);
   const center = (n - 1) / 2;
   const stones = countStones(board);
   const maxCandidates = stones < 8 ? 30 : stones < 20 ? 24 : 18;
@@ -264,7 +286,7 @@ function alphaBeta(
     for (const pos of list) {
       const nextBoard = board.map((r) => r.slice());
       nextBoard[pos.row][pos.col] = currentPlayer;
-      const child = alphaBeta(nextBoard, depth - 1, alpha, beta, next(currentPlayer), ai, {
+      const child = alphaBeta(nextBoard, depth - 1, alpha, beta, next(currentPlayer), ai, isBlockedFn, {
         row: pos.row,
         col: pos.col,
         player: currentPlayer,
@@ -279,7 +301,7 @@ function alphaBeta(
     for (const pos of list) {
       const nextBoard = board.map((r) => r.slice());
       nextBoard[pos.row][pos.col] = currentPlayer;
-      const child = alphaBeta(nextBoard, depth - 1, alpha, beta, next(currentPlayer), ai, {
+      const child = alphaBeta(nextBoard, depth - 1, alpha, beta, next(currentPlayer), ai, isBlockedFn, {
         row: pos.row,
         col: pos.col,
         player: currentPlayer,
@@ -292,12 +314,23 @@ function alphaBeta(
   }
 }
 
-function findBestMoveAlphaBeta(board: Cell[][], ai: Player): Position | null {
+function findBestMoveAlphaBeta(board: Cell[][], ai: Player, isBlockedFn: (r: number, c: number) => boolean): Position | null {
   const n = board.length;
   const stones = countStones(board);
-  if (stones === 0) return { row: Math.floor(n / 2), col: Math.floor(n / 2) };
-  const empties = getCandidatePositions(board);
+  const empties = getCandidatePositions(board, isBlockedFn);
   if (empties.length === 0) return null;
+  // First move preference: center if available; otherwise closest non-blocked
+  if (stones === 0) {
+    const center = Math.floor(n / 2);
+    if (!isBlockedFn(center, center)) return { row: center, col: center };
+    let best: Position | null = null;
+    let bestDist = Infinity;
+    for (const p of empties) {
+      const d = Math.abs(p.row - center) + Math.abs(p.col - center);
+      if (d < bestDist) { bestDist = d; best = p; }
+    }
+    return best;
+  }
   let depth = 2;
   if (n <= 15) {
     depth = stones < 10 ? 3 : 2;
@@ -321,7 +354,7 @@ function findBestMoveAlphaBeta(board: Cell[][], ai: Player): Position | null {
     nextBoard[pos.row][pos.col] = ai;
     const res = checkWin(nextBoard, pos.row, pos.col, ai);
     if (res.winner === ai) return pos;
-    const val = alphaBeta(nextBoard, depth - 1, -Infinity, Infinity, opponent, ai, {
+    const val = alphaBeta(nextBoard, depth - 1, -Infinity, Infinity, opponent, ai, isBlockedFn, {
       row: pos.row,
       col: pos.col,
       player: ai,
@@ -343,18 +376,57 @@ export const useGameStore = create<GameState>((set, get) => ({
   winningLine: [],
   aiEnabled: true,
   aiPlayer: "white",
+  tempBlock: {},
+  permBlock: {},
+  frozenTurns: { black: 0, white: 0 },
+  extraTurns: { black: 0, white: 0 },
+  skillCooldowns: { black: { sandstorm: 0, stillwater: 0, mountainBreaker: 0, rebirth: 0, shift: 0 }, white: { sandstorm: 0, stillwater: 0, mountainBreaker: 0, rebirth: 0, shift: 0 } },
+  pendingSkill: null,
+  skillTargetBuffer: [],
+  isBlocked: (row, col) => {
+    const key = `${row},${col}`;
+    const { tempBlock, permBlock } = get();
+    const t = tempBlock[key] || 0;
+    return !!permBlock[key] || t > 0;
+  },
   placeStone: (row, col) => {
-    const { board, currentPlayer, winner } = get();
-    if (winner || board[row][col] !== null) return;
+    const { board, currentPlayer, winner, isBlocked, extraTurns, frozenTurns, skillCooldowns, tempBlock, pendingSkill } = get();
+    if (winner || pendingSkill || board[row][col] !== null || isBlocked(row, col)) return;
     const nextBoard = board.map((rowArr) => rowArr.slice());
     nextBoard[row][col] = currentPlayer;
     const res = checkWin(nextBoard, row, col, currentPlayer);
+    // 计算下一执子（考虑额外回合与冻结）
+    const nextExtra = { ...extraTurns };
+    const nextFrozen = { ...frozenTurns };
+    let nextPlayer: Player = currentPlayer === "black" ? "white" : "black";
+    if (nextExtra[currentPlayer] > 0) {
+      nextExtra[currentPlayer] -= 1;
+      nextPlayer = currentPlayer;
+    } else if (nextFrozen[nextPlayer] > 0) {
+      nextFrozen[nextPlayer] -= 1; // 跳过对方回合
+      nextPlayer = currentPlayer;
+    }
+    // 冷却与临时封锁衰减：回合开始时执行
+    const nextCooldowns = { black: { ...skillCooldowns.black }, white: { ...skillCooldowns.white } };
+    for (const k of Object.keys(nextCooldowns[nextPlayer])) {
+      const id = k as SkillId;
+      nextCooldowns[nextPlayer][id] = Math.max(0, nextCooldowns[nextPlayer][id] - 1);
+    }
+    const nextTemp: Record<string, number> = { ...tempBlock };
+    for (const k of Object.keys(nextTemp)) {
+      const v = nextTemp[k];
+      if (v <= 1) delete nextTemp[k]; else nextTemp[k] = v - 1;
+    }
     set((state) => ({
       board: nextBoard,
       moves: [...state.moves, { row, col, player: currentPlayer }],
-      currentPlayer: currentPlayer === "black" ? "white" : "black",
+      currentPlayer: res.winner ? state.currentPlayer : nextPlayer,
       winner: res.winner,
       winningLine: res.line,
+      extraTurns: nextExtra,
+      frozenTurns: nextFrozen,
+      skillCooldowns: nextCooldowns,
+      tempBlock: nextTemp,
     }));
   },
   undo: () => {
@@ -380,6 +452,13 @@ export const useGameStore = create<GameState>((set, get) => ({
       currentPlayer: "black",
       winner: null,
       winningLine: [],
+      tempBlock: {},
+      permBlock: {},
+      frozenTurns: { black: 0, white: 0 },
+      extraTurns: { black: 0, white: 0 },
+      skillCooldowns: { black: { sandstorm: 0, stillwater: 0, mountainBreaker: 0, rebirth: 0, shift: 0 }, white: { sandstorm: 0, stillwater: 0, mountainBreaker: 0, rebirth: 0, shift: 0 } },
+      pendingSkill: null,
+      skillTargetBuffer: [],
     });
   },
   setBoardSize: (size) => {
@@ -388,17 +467,269 @@ export const useGameStore = create<GameState>((set, get) => ({
   },
   setAiEnabled: (enabled) => set({ aiEnabled: enabled }),
   setAiPlayer: (player) => set({ aiPlayer: player }),
+  triggerSkill: (id: SkillId) => {
+    const { currentPlayer, skillCooldowns, pendingSkill, winner, aiEnabled, aiPlayer, moves } = get();
+    if (winner) return;
+    if (aiEnabled && currentPlayer === aiPlayer) return; // AI 回合不可用技能
+    if (pendingSkill) return; // 已在选中状态
+    if (skillCooldowns[currentPlayer][id] > 0) return; // 冷却中
+    const def = SKILL_DEFINITIONS[id];
+    // 目标型技能：进入选中模式
+    if (def.target !== "none") {
+      set({ pendingSkill: { id }, skillTargetBuffer: [] });
+      return;
+    }
+    // 立即生效型技能并结束本回合
+    if (id === "stillwater") {
+      set((s) => {
+        const opponent: Player = currentPlayer === "black" ? "white" : "black";
+        const nextFrozen = { ...s.frozenTurns, [opponent]: (s.frozenTurns[opponent] || 0) + 1 };
+        const nextExtra = { ...s.extraTurns, [currentPlayer]: (s.extraTurns[currentPlayer] || 0) + 1 };
+        const baseCooldowns = { black: { ...s.skillCooldowns.black }, white: { ...s.skillCooldowns.white } };
+        baseCooldowns[currentPlayer].stillwater = SKILL_DEFINITIONS.stillwater.cooldown;
+        let nextPlayer: Player = currentPlayer === "black" ? "white" : "black";
+        if (nextExtra[currentPlayer] > 0) {
+          nextExtra[currentPlayer] -= 1;
+          nextPlayer = currentPlayer;
+        } else if (nextFrozen[nextPlayer] > 0) {
+          nextFrozen[nextPlayer] -= 1;
+          nextPlayer = currentPlayer;
+        }
+        const nextCooldowns = { black: { ...baseCooldowns.black }, white: { ...baseCooldowns.white } };
+        for (const k of Object.keys(nextCooldowns[nextPlayer])) {
+          const kid = k as SkillId;
+          nextCooldowns[nextPlayer][kid] = Math.max(0, nextCooldowns[nextPlayer][kid] - 1);
+        }
+        const nextTemp: Record<string, number> = { ...(s.tempBlock || {}) };
+        for (const k of Object.keys(nextTemp)) {
+          const v = nextTemp[k];
+          if (v <= 1) delete nextTemp[k]; else nextTemp[k] = v - 1;
+        }
+        return {
+          frozenTurns: nextFrozen,
+          extraTurns: nextExtra,
+          skillCooldowns: nextCooldowns,
+          tempBlock: nextTemp,
+          currentPlayer: nextPlayer,
+        };
+      });
+      return;
+    }
+    if (id === "rebirth") {
+      const myMoves = moves.filter((m) => m.player === currentPlayer);
+      if (myMoves.length < 2) return;
+      const { board } = get();
+      const lastTwo = myMoves.slice(-2);
+      const nextBoard = board.map((r) => r.slice());
+      for (const m of lastTwo) {
+        nextBoard[m.row][m.col] = null;
+      }
+      set((s) => {
+        const baseCooldowns = { black: { ...s.skillCooldowns.black }, white: { ...s.skillCooldowns.white } };
+        baseCooldowns[currentPlayer].rebirth = SKILL_DEFINITIONS.rebirth.cooldown;
+        const extra = { ...s.extraTurns };
+        const frozen = { ...s.frozenTurns };
+        let nextPlayer: Player = currentPlayer === "black" ? "white" : "black";
+        if (extra[currentPlayer] > 0) {
+          extra[currentPlayer] -= 1;
+          nextPlayer = currentPlayer;
+        } else if (frozen[nextPlayer] > 0) {
+          frozen[nextPlayer] -= 1;
+          nextPlayer = currentPlayer;
+        }
+        const nextCooldowns = { black: { ...baseCooldowns.black }, white: { ...baseCooldowns.white } };
+        for (const k of Object.keys(nextCooldowns[nextPlayer])) {
+          const kid = k as SkillId;
+          nextCooldowns[nextPlayer][kid] = Math.max(0, nextCooldowns[nextPlayer][kid] - 1);
+        }
+        const nextTemp: Record<string, number> = { ...(s.tempBlock || {}) };
+        for (const k of Object.keys(nextTemp)) {
+          const v = nextTemp[k];
+          if (v <= 1) delete nextTemp[k]; else nextTemp[k] = v - 1;
+        }
+        return {
+          board: nextBoard,
+          permBlock: {},
+          skillCooldowns: nextCooldowns,
+          tempBlock: nextTemp,
+          currentPlayer: nextPlayer,
+        };
+      });
+      return;
+    }
+  },
+  cancelSkill: () => set({ pendingSkill: null, skillTargetBuffer: [] }),
+  applySkillTarget: (row, col) => {
+    const { pendingSkill, board, currentPlayer, skillTargetBuffer, winner } = get();
+    if (winner) return;
+    if (!pendingSkill) return;
+    const id = pendingSkill.id;
+    const def = SKILL_DEFINITIONS[id];
+    const key = `${row},${col}`;
+    if (id === "sandstorm") {
+      const opponent: Player = currentPlayer === "black" ? "white" : "black";
+      if (board[row][col] === opponent) {
+        const nextBoard = board.map((r) => r.slice());
+        nextBoard[row][col] = null;
+        set((s) => {
+          // 设置冷却与封锁
+          const baseCooldowns = { black: { ...s.skillCooldowns.black }, white: { ...s.skillCooldowns.white } };
+          baseCooldowns[currentPlayer].sandstorm = SKILL_DEFINITIONS.sandstorm.cooldown;
+          const nextTemp = { ...s.tempBlock, [key]: 2 };
+          // 推进到下一执子
+          const extra = { ...s.extraTurns };
+          const frozen = { ...s.frozenTurns };
+          let nextPlayer: Player = currentPlayer === "black" ? "white" : "black";
+          if (extra[currentPlayer] > 0) {
+            extra[currentPlayer] -= 1;
+            nextPlayer = currentPlayer;
+          } else if (frozen[nextPlayer] > 0) {
+            frozen[nextPlayer] -= 1;
+            nextPlayer = currentPlayer;
+          }
+          const nextCooldowns = { black: { ...baseCooldowns.black }, white: { ...baseCooldowns.white } };
+          for (const k of Object.keys(nextCooldowns[nextPlayer])) {
+            const kid = k as SkillId;
+            nextCooldowns[nextPlayer][kid] = Math.max(0, nextCooldowns[nextPlayer][kid] - 1);
+          }
+          // 临时封锁衰减
+          for (const tk of Object.keys(nextTemp)) {
+            const v = nextTemp[tk];
+            if (v <= 1) delete nextTemp[tk]; else nextTemp[tk] = v - 1;
+          }
+          return {
+            board: nextBoard,
+            tempBlock: nextTemp,
+            skillCooldowns: nextCooldowns,
+            pendingSkill: null,
+            skillTargetBuffer: [],
+            extraTurns: extra,
+            frozenTurns: frozen,
+            currentPlayer: nextPlayer,
+          };
+        });
+      }
+    }
+    if (id === "mountainBreaker") {
+      const n = get().boardSize;
+      const halfH = 3, halfW = 3;
+      const nextPerm = { ...get().permBlock };
+      for (let dr = -halfH + 1; dr <= halfH; dr++) {
+        for (let dc = -halfW + 1; dc <= halfW; dc++) {
+          const rr = row + dr, cc = col + dc;
+          if (inBounds(n, rr, cc)) nextPerm[`${rr},${cc}`] = true;
+        }
+      }
+      set((s) => {
+        const baseCooldowns = { black: { ...s.skillCooldowns.black }, white: { ...s.skillCooldowns.white } };
+        baseCooldowns[currentPlayer].mountainBreaker = SKILL_DEFINITIONS.mountainBreaker.cooldown;
+        const extra = { ...s.extraTurns };
+        const frozen = { ...s.frozenTurns };
+        let nextPlayer: Player = currentPlayer === "black" ? "white" : "black";
+        if (extra[currentPlayer] > 0) {
+          extra[currentPlayer] -= 1;
+          nextPlayer = currentPlayer;
+        } else if (frozen[nextPlayer] > 0) {
+          frozen[nextPlayer] -= 1;
+          nextPlayer = currentPlayer;
+        }
+        const nextCooldowns = { black: { ...baseCooldowns.black }, white: { ...baseCooldowns.white } };
+        for (const k of Object.keys(nextCooldowns[nextPlayer])) {
+          const kid = k as SkillId;
+          nextCooldowns[nextPlayer][kid] = Math.max(0, nextCooldowns[nextPlayer][kid] - 1);
+        }
+        const nextTemp: Record<string, number> = { ...(s.tempBlock || {}) };
+        for (const tk of Object.keys(nextTemp)) {
+          const v = nextTemp[tk];
+          if (v <= 1) delete nextTemp[tk]; else nextTemp[tk] = v - 1;
+        }
+        return {
+          permBlock: nextPerm,
+          pendingSkill: null,
+          skillTargetBuffer: [],
+          extraTurns: extra,
+          frozenTurns: frozen,
+          skillCooldowns: nextCooldowns,
+          tempBlock: nextTemp,
+          currentPlayer: nextPlayer,
+        };
+      });
+    }
+    if (id === "shift") {
+      const buf = [...skillTargetBuffer];
+      if (buf.length === 0) {
+        const opponent: Player = currentPlayer === "black" ? "white" : "black";
+        if (board[row][col] === opponent) {
+          set({ skillTargetBuffer: [{ row, col }] });
+        }
+      } else if (buf.length === 1) {
+        if (board[row][col] === null && !get().isBlocked(row, col)) {
+          const from = buf[0];
+          const nextBoard = board.map((r) => r.slice());
+          const opponent: Player = currentPlayer === "black" ? "white" : "black";
+          nextBoard[from.row][from.col] = null;
+          nextBoard[row][col] = opponent;
+          const fromKey = `${from.row},${from.col}`;
+          set((s) => {
+            const baseCooldowns = { black: { ...s.skillCooldowns.black }, white: { ...s.skillCooldowns.white } };
+            baseCooldowns[currentPlayer].shift = SKILL_DEFINITIONS.shift.cooldown;
+            const nextTemp = { ...s.tempBlock, [fromKey]: 2 };
+            const extra = { ...s.extraTurns };
+            const frozen = { ...s.frozenTurns };
+            let nextPlayer: Player = currentPlayer === "black" ? "white" : "black";
+            if (extra[currentPlayer] > 0) {
+              extra[currentPlayer] -= 1;
+              nextPlayer = currentPlayer;
+            } else if (frozen[nextPlayer] > 0) {
+              frozen[nextPlayer] -= 1;
+              nextPlayer = currentPlayer;
+            }
+            const nextCooldowns = { black: { ...baseCooldowns.black }, white: { ...baseCooldowns.white } };
+            for (const k of Object.keys(nextCooldowns[nextPlayer])) {
+              const kid = k as SkillId;
+              nextCooldowns[nextPlayer][kid] = Math.max(0, nextCooldowns[nextPlayer][kid] - 1);
+            }
+            for (const tk of Object.keys(nextTemp)) {
+              const v = nextTemp[tk];
+              if (v <= 1) delete nextTemp[tk]; else nextTemp[tk] = v - 1;
+            }
+            return {
+              board: nextBoard,
+              tempBlock: nextTemp,
+              skillCooldowns: nextCooldowns,
+              pendingSkill: null,
+              skillTargetBuffer: [],
+              extraTurns: extra,
+              frozenTurns: frozen,
+              currentPlayer: nextPlayer,
+            };
+          });
+        }
+      }
+    }
+  },
   makeAiMove: () => {
-    const { aiEnabled, aiPlayer, currentPlayer, winner, board } = get();
+    const { aiEnabled, aiPlayer, currentPlayer, winner, board, isBlocked, frozenTurns } = get();
     if (!aiEnabled || winner || currentPlayer !== aiPlayer) return;
+    if (frozenTurns[aiPlayer] > 0) return; // AI 被冻结，跳过回合
     const n = board.length;
-    const empties = getEmptyPositions(board);
+    const empties = getEmptyPositions(board).filter((p) => !isBlocked(p.row, p.col));
     if (empties.length === 0) return;
 
     // First move: center
-    if (empties.length === n * n) {
+    if (countStones(board) === 0) {
       const center = Math.floor(n / 2);
-      get().placeStone(center, center);
+      if (!isBlocked(center, center)) get().placeStone(center, center);
+      else {
+        // fallback to nearest non-blocked empty
+        let best: Position | null = null;
+        let bestDist = Infinity;
+        for (const p of empties) {
+          const d = Math.abs(p.row - center) + Math.abs(p.col - center);
+          if (d < bestDist) { bestDist = d; best = p; }
+        }
+        if (best) get().placeStone(best.row, best.col);
+      }
       return;
     }
 
@@ -424,8 +755,8 @@ export const useGameStore = create<GameState>((set, get) => ({
       }
     }
     // 3) alpha-beta search fallback
-    const best = findBestMoveAlphaBeta(board, aiPlayer);
-    if (best) {
+    const best = findBestMoveAlphaBeta(board, aiPlayer, isBlocked);
+    if (best && !isBlocked(best.row, best.col)) {
       get().placeStone(best.row, best.col);
     }
   },

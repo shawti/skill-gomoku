@@ -5,15 +5,36 @@ import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from "@/components/ui/card";
 import { Dialog, DialogTrigger, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogClose } from "@/components/ui/dialog";
 import GomokuBoard from "@/components/gomoku/Board";
-import { useGameStore } from "@/store/gomoku";
-import { RotateCcw, RefreshCcw, Settings } from "lucide-react";
+import { useGameStore, SKILL_DEFINITIONS, type SkillId } from "@/store/gomoku";
+import { RotateCcw, RefreshCcw, Settings, Wand2, XCircle } from "lucide-react";
+import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "@/components/ui/tooltip";
 
 export default function Page() {
-  const { currentPlayer, winner, moves, boardSize, undo, reset, setBoardSize, aiEnabled, aiPlayer, setAiEnabled, setAiPlayer, makeAiMove } = useGameStore();
+  const {
+    currentPlayer,
+    winner,
+    moves,
+    boardSize,
+    undo,
+    reset,
+    setBoardSize,
+    aiEnabled,
+    aiPlayer,
+    setAiEnabled,
+    setAiPlayer,
+    makeAiMove,
+    skillCooldowns,
+    triggerSkill,
+    pendingSkill,
+    cancelSkill,
+    frozenTurns,
+    extraTurns,
+  } = useGameStore();
   const [open, setOpen] = React.useState(false);
   const [sizeDraft, setSizeDraft] = React.useState(boardSize);
   const [modeDraft, setModeDraft] = React.useState<'pvp' | 'pve'>(aiEnabled ? 'pve' : 'pvp');
   const [aiPlayerDraft, setAiPlayerDraft] = React.useState(aiPlayer);
+const [hoveredSkill, setHoveredSkill] = React.useState<SkillId | null>(null);
 
   React.useEffect(() => {
     if (aiEnabled && currentPlayer === aiPlayer && !winner) {
@@ -25,6 +46,28 @@ export default function Page() {
   }, [aiEnabled, aiPlayer, currentPlayer, winner, moves.length, makeAiMove]);
 
   const playerLabel = winner ? (winner === 'black' ? '黑子胜' : '白子胜') : (currentPlayer === 'black' ? '黑子' : '白子');
+  const opponent: 'black' | 'white' = currentPlayer === 'black' ? 'white' : 'black';
+
+  const SkillButton = ({ id }: { id: SkillId }) => {
+    const def = SKILL_DEFINITIONS[id];
+    const cd = skillCooldowns[currentPlayer][id] || 0;
+    const disabled = !!winner || cd > 0 || !!pendingSkill || (aiEnabled && currentPlayer === aiPlayer);
+    return (
+      <Button
+        variant={cd > 0 ? 'secondary' : 'default'}
+        size="sm"
+        disabled={disabled}
+        onClick={() => triggerSkill(id)}
+        className={`w-full justify-between gap-2 ${disabled ? 'pointer-events-none' : ''}`}
+      >
+        <span className="inline-flex items-center gap-2">
+          <Wand2 className="h-3.5 w-3.5" />
+          <span className="truncate">{def.name}</span>
+        </span>
+        <span className="text-xs whitespace-nowrap text-neutral-600 dark:text-neutral-400">{cd > 0 ? `冷却 ${cd}` : '就绪'}</span>
+      </Button>
+    );
+  };
 
   return (
     <div className="min-h-screen w-full bg-gradient-to-b from-zinc-50 to-zinc-100 dark:from-black dark:to-neutral-900">
@@ -68,6 +111,59 @@ export default function Page() {
                     <span className="text-neutral-600 dark:text-neutral-400">模式</span>
                     <span className="font-medium">{aiEnabled ? '人机对战' : '双人对战'}</span>
                   </div>
+                  <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+                    <span className="text-neutral-600 dark:text-neutral-400">对方冻结剩余</span>
+                    <span className="font-medium text-right">{frozenTurns[opponent] ?? 0}</span>
+                    <span className="text-neutral-600 dark:text-neutral-400">我方额外回合</span>
+                    <span className="font-medium text-right">{extraTurns[currentPlayer] ?? 0}</span>
+                  </div>
+                </div>
+
+                {/* 技能栏 */}
+                <div className="rounded-lg border border-neutral-200 dark:border-neutral-800 bg-white/70 dark:bg-neutral-900/70 p-4">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-medium">技能栏</span>
+                    {pendingSkill && (
+                      <Button variant="ghost" size="sm" onClick={cancelSkill}>
+                        <XCircle className="mr-1.5 h-4 w-4" /> 取消技能
+                      </Button>
+                    )}
+                  </div>
+                  <div className="mt-3 grid grid-cols-2 gap-2">
+                    <TooltipProvider delayDuration={50}>
+                      {(['sandstorm','stillwater','mountainBreaker','rebirth','shift'] as SkillId[]).map((id) => {
+                        const def = SKILL_DEFINITIONS[id];
+                        const cd = skillCooldowns[currentPlayer][id] || 0;
+                        const targetLabel = def.target === 'none'
+                          ? '无需选点，点击即生效'
+                          : def.target === 'stone'
+                            ? '在棋盘上点击敌方棋子'
+                            : def.target === 'point'
+                              ? '在棋盘上点击一个交叉点'
+                              : '先点击敌子，再点击目标交叉点';
+                        return (
+                          <Tooltip key={id}>
+                            <TooltipTrigger asChild>
+                              <span className="inline-block">
+                                <SkillButton id={id} />
+                              </span>
+                            </TooltipTrigger>
+                            <TooltipContent side="top" align="center" sideOffset={8} className="max-w-[240px] rounded-md border border-neutral-200 bg-white/90 p-2 text-neutral-800 shadow-sm dark:border-neutral-800 dark:bg-neutral-900/90 dark:text-neutral-100">
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="text-xs font-medium truncate">{def.name}</span>
+                                <span className="text-[11px] whitespace-nowrap text-neutral-600 dark:text-neutral-400">{cd > 0 ? `冷却剩余：${cd}` : `冷却：${def.cooldown}`}</span>
+                              </div>
+                              <p className="mt-1 text-[11px]">{def.description}</p>
+                              <p className="mt-1 text-[11px] text-neutral-600 dark:text-neutral-400">用法：{targetLabel}</p>
+                            </TooltipContent>
+                          </Tooltip>
+                        );
+                      })}
+                    </TooltipProvider>
+                  </div>
+<p className="mt-3 text-xs text-neutral-600 dark:text-neutral-400">
+  说明：鼠标悬停技能按钮查看详细说明；部分技能需在棋盘上选点或选子。被封锁区域不可落子。
+</p>
                 </div>
 
                 <div className="flex flex-wrap gap-3">
@@ -148,7 +244,7 @@ export default function Page() {
             </div>
           </CardContent>
           <CardFooter>
-            <p className="text-xs text-neutral-500 dark:text-neutral-400">提示：点击交叉点下子；人机模式下 AI 会自动落子。</p>
+            <p className="text-xs text-neutral-500 dark:text-neutral-400">提示：点击交叉点下子；人机模式下 AI 会自动落子；技能：选中按钮后在棋盘上选子/选点。</p>
           </CardFooter>
         </Card>
       </main>

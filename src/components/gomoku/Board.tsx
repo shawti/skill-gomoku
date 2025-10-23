@@ -5,7 +5,18 @@ import clsx from "clsx";
 
 // SVG 棋盘：画线于格点，棋子落在交叉点
 export function GomokuBoard() {
-  const { board, boardSize, placeStone, winner, winningLine } = useGameStore();
+  const {
+    board,
+    boardSize,
+    placeStone,
+    winner,
+    winningLine,
+    isBlocked,
+    pendingSkill,
+    applySkillTarget,
+    skillTargetBuffer,
+    currentPlayer,
+  } = useGameStore();
 
   // 计算高亮连线集合
   const winningSet = React.useMemo(() => {
@@ -36,6 +47,10 @@ export function GomokuBoard() {
 
   const stoneRadiusBase = steps * 0.42; // 相对格距的半径基础值
   const starRadius = Math.min(steps * 0.12, 1.2);
+
+  // 技能状态与便捷判断
+  const pendingId = pendingSkill?.id;
+  const opponent: 'black' | 'white' = currentPlayer === 'black' ? 'white' : 'black';
 
   return (
     <div
@@ -111,6 +126,8 @@ export function GomokuBoard() {
             const isWinning = winningSet.has(`${r}:${c}`);
             const fill = cell === "black" ? "#000" : "#fff";
             const radius = cell === "white" ? stoneRadiusBase * 0.98 : stoneRadiusBase; // 白子微调抵消视觉膨胀
+            const canClickStone = !!pendingId && (pendingId === 'sandstorm' || pendingId === 'shift') && cell === opponent && !winner;
+            const selected = skillTargetBuffer.length === 1 && skillTargetBuffer[0].row === r && skillTargetBuffer[0].col === c;
             return (
               <g key={`stone-${r}-${c}`}>
                 <circle
@@ -131,18 +148,72 @@ export function GomokuBoard() {
                     strokeWidth={Math.max(0.5, steps * 0.06)}
                   />
                 )}
+                {selected && (
+                  <circle
+                    cx={x}
+                    cy={y}
+                    r={radius + steps * 0.08}
+                    className="fill-none"
+                    stroke="#3b82f6"
+                    strokeWidth={Math.max(0.5, steps * 0.06)}
+                  />
+                )}
+                {canClickStone && (
+                  // 增加点击命中区（透明），用于技能选择敌子
+                  <rect
+                    x={x - steps * 0.45}
+                    y={y - steps * 0.45}
+                    width={steps * 0.9}
+                    height={steps * 0.9}
+                    fill="transparent"
+                    onClick={() => applySkillTarget(r, c)}
+                    style={{ cursor: "pointer" }}
+                  />
+                )}
               </g>
             );
           })
         )}
 
-        {/* 点击区域：仅为空位且未分出胜负时可点击 */}
+        {/* 封锁区渲染（临时与永久） */}
+        {board.map((rowArr, r) =>
+          rowArr.map((_, c) => {
+            if (!isBlocked(r, c)) return null;
+            const { x, y } = toCoord(r, c);
+            const size = steps * 0.6;
+            const sx = x - size / 2;
+            const sy = y - size / 2;
+            return (
+              <g key={`block-${r}-${c}`}>
+                <rect
+                  x={sx}
+                  y={sy}
+                  width={size}
+                  height={size}
+                  className="fill-red-500/18 stroke-red-500/55 dark:fill-red-500/12 dark:stroke-red-400/60"
+                  strokeWidth={Math.max(0.4, steps * 0.04)}
+                />
+                <line x1={sx} y1={sy} x2={sx + size} y2={sy + size} className="stroke-red-600/70 dark:stroke-red-400" strokeWidth={Math.max(0.35, steps * 0.04)} />
+                <line x1={sx + size} y1={sy} x2={sx} y2={sy + size} className="stroke-red-600/70 dark:stroke-red-400" strokeWidth={Math.max(0.35, steps * 0.04)} />
+              </g>
+            );
+          })
+        )}
+
+        {/* 点击区域：仅为空位且未封锁、未分出胜负时可点击 */}
         {board.map((rowArr, r) =>
           rowArr.map((cell, c) => {
-            if (cell || winner) return null;
+            if (cell || winner || isBlocked(r, c)) return null;
             const { x, y } = toCoord(r, c);
             // 以交叉点为中心的透明方形点击区，提升易点性
             const hitSize = steps * 0.75;
+            const onClick = () => {
+              if (pendingId) {
+                applySkillTarget(r, c);
+              } else {
+                placeStone(r, c);
+              }
+            };
             return (
               <rect
                 key={`hit-${r}-${c}`}
@@ -151,7 +222,7 @@ export function GomokuBoard() {
                 width={hitSize}
                 height={hitSize}
                 fill="transparent"
-                onClick={() => placeStone(r, c)}
+                onClick={onClick}
                 style={{ cursor: "pointer" }}
               />
             );
