@@ -136,22 +136,6 @@ React.useEffect(() => {
     <div className="min-h-screen w-full bg-linear-to-b from-zinc-50 to-zinc-100 dark:from-black dark:to-neutral-900">
       <main className="mx-auto max-w-5xl px-6 py-10">
         <Card className="relative">
-          <div className="absolute top-3 right-3">
-            <Button
-              variant="ghost"
-              size="icon"
-              aria-label={bgmEnabled ? '关闭背景音乐' : '开启背景音乐'}
-              aria-pressed={bgmEnabled}
-              onClick={() => setBgmEnabled((prev) => !prev)}
-              title={bgmEnabled ? '关闭背景音乐' : '开启背景音乐'}
-            >
-              {bgmEnabled ? (
-                <Volume2 className="h-4 w-4" />
-              ) : (
-                <VolumeX className="h-4 w-4" />
-              )}
-            </Button>
-          </div>
           <CardHeader className="flex items-start justify-between">
             <div>
               <CardTitle>技能五子棋 - Skill Gomoku</CardTitle>
