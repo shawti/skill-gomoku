@@ -37,7 +37,6 @@ export default function Page() {
   const [sizeDraft, setSizeDraft] = React.useState(boardSize);
   const [modeDraft, setModeDraft] = React.useState<'pvp' | 'pve'>(aiEnabled ? 'pve' : 'pvp');
   const [aiPlayerDraft, setAiPlayerDraft] = React.useState(aiPlayer);
-const [hoveredSkill, setHoveredSkill] = React.useState<SkillId | null>(null);
 const [bgmEnabled, setBgmEnabled] = React.useState(true);
 const bgmRef = React.useRef<HTMLAudioElement | null>(null);
 const interactionPlayRef = React.useRef<(() => void) | undefined>(undefined);
@@ -46,25 +45,45 @@ React.useEffect(() => {
     const a = new Audio('/skill-gomoku.mp3');
     a.loop = true;
     a.volume = 0.15;
+    a.preload = 'auto';
     bgmRef.current = a;
   }
-  const audio = bgmRef.current!;
+  return () => {
+    bgmRef.current?.pause();
+    bgmRef.current = null;
+  };
+}, []);
+
+React.useEffect(() => {
+  const audio = bgmRef.current;
+  if (!audio) return;
+
   if (bgmEnabled) {
     audio.play().catch(() => {
       const handler = () => {
         if (!bgmEnabled) return;
         audio.play().catch(() => {});
       };
+      // remove previous handler if exists
+      if (interactionPlayRef.current) {
+        window.removeEventListener('pointerdown', interactionPlayRef.current);
+        interactionPlayRef.current = undefined;
+      }
       interactionPlayRef.current = handler;
-      window.addEventListener('click', handler, { once: true });
+      window.addEventListener('pointerdown', handler, { once: true });
     });
   } else {
     audio.pause();
+    if (interactionPlayRef.current) {
+      window.removeEventListener('pointerdown', interactionPlayRef.current);
+      interactionPlayRef.current = undefined;
+    }
   }
+
   return () => {
     const h = interactionPlayRef.current;
     if (h) {
-      window.removeEventListener('click', h);
+      window.removeEventListener('pointerdown', h);
       interactionPlayRef.current = undefined;
     }
   };
@@ -114,7 +133,7 @@ React.useEffect(() => {
   };
 
   return (
-    <div className="min-h-screen w-full bg-gradient-to-b from-zinc-50 to-zinc-100 dark:from-black dark:to-neutral-900">
+    <div className="min-h-screen w-full bg-linear-to-b from-zinc-50 to-zinc-100 dark:from-black dark:to-neutral-900">
       <main className="mx-auto max-w-5xl px-6 py-10">
         <Card className="relative">
           <div className="absolute top-3 right-3">
@@ -122,6 +141,7 @@ React.useEffect(() => {
               variant="ghost"
               size="icon"
               aria-label={bgmEnabled ? '关闭背景音乐' : '开启背景音乐'}
+              aria-pressed={bgmEnabled}
               onClick={() => setBgmEnabled((prev) => !prev)}
               title={bgmEnabled ? '关闭背景音乐' : '开启背景音乐'}
             >
@@ -132,11 +152,27 @@ React.useEffect(() => {
               )}
             </Button>
           </div>
-          <CardHeader>
-            <CardTitle>技能五子棋 - Skill Gomoku</CardTitle>
-            <CardDescription>
-              技能五子棋，就是在传统的五子棋，加入技能，好好玩！要爆了！
-            </CardDescription>
+          <CardHeader className="flex items-start justify-between">
+            <div>
+              <CardTitle>技能五子棋 - Skill Gomoku</CardTitle>
+              <CardDescription>
+                技能五子棋，就是在传统的五子棋，加入技能，好好玩！要爆了！
+              </CardDescription>
+            </div>
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label={bgmEnabled ? '关闭背景音乐' : '开启背景音乐'}
+              aria-pressed={bgmEnabled}
+              onClick={() => setBgmEnabled((prev) => !prev)}
+              title={bgmEnabled ? '关闭背景音乐' : '开启背景音乐'}
+            >
+              {bgmEnabled ? (
+                <Volume2 className="h-4 w-4" />
+              ) : (
+                <VolumeX className="h-4 w-4" />
+              )}
+            </Button>
           </CardHeader>
           <CardContent>
             <div className="grid gap-6 md:grid-cols-[1fr_320px]">

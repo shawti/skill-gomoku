@@ -594,7 +594,6 @@ export const useGameStore = create<GameState>((set, get) => ({
     if (winner) return;
     if (!pendingSkill) return;
     const id = pendingSkill.id;
-    const def = SKILL_DEFINITIONS[id];
     const key = `${row},${col}`;
     if (id === "sandstorm") {
       const opponent: Player = currentPlayer === "black" ? "white" : "black";

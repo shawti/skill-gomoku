@@ -58,7 +58,7 @@ export function GomokuBoard() {
       className={twMerge(
         clsx(
           "relative w-full max-w-[720px] aspect-square rounded-xl",
-          "border border-amber-300/70 bg-gradient-to-br from-amber-100 to-amber-200",
+          "border border-amber-300/70 bg-linear-to-br from-amber-100 to-amber-200",
           "dark:border-neutral-700 dark:from-neutral-800/40 dark:to-neutral-700/40 shadow-inner"
         )
       )}
