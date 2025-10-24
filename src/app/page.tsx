@@ -32,6 +32,7 @@ export default function Page() {
     frozenTurns,
     extraTurns,
     usedMountainBreakerSinceLastRebirth,
+    draw,
   } = useGameStore();
   const [open, setOpen] = React.useState(false);
   const [sizeDraft, setSizeDraft] = React.useState(boardSize);
@@ -107,15 +108,15 @@ React.useEffect(() => {
 }, []);
 
   React.useEffect(() => {
-    if (aiEnabled && currentPlayer === aiPlayer && !winner) {
+    if (aiEnabled && currentPlayer === aiPlayer && !winner && !draw) {
       const t = setTimeout(() => {
         makeAiMove();
       }, 220);
       return () => clearTimeout(t);
     }
-  }, [aiEnabled, aiPlayer, currentPlayer, winner, moves.length, makeAiMove]);
+  }, [aiEnabled, aiPlayer, currentPlayer, winner, draw, moves.length, makeAiMove]);
 
-  const playerLabel = winner ? (winner === 'black' ? '黑子胜' : '白子胜') : (currentPlayer === 'black' ? '黑子' : '白子');
+  const playerLabel = winner ? (winner === 'black' ? '黑子胜' : '白子胜') : (draw ? '和棋' : (currentPlayer === 'black' ? '黑子' : '白子'));
   const opponent: 'black' | 'white' = currentPlayer === 'black' ? 'white' : 'black';
 
   const SkillButton = ({ id }: { id: SkillId }) => {
@@ -125,7 +126,7 @@ React.useEffect(() => {
     const hasDestroyed = Object.keys(permBlock).length > 0;
     const rebirthInvalid = id === 'rebirth' && (!hasDestroyed || validMyCount < 2);
     const mbLockedByRule = id === 'mountainBreaker' && usedMountainBreakerSinceLastRebirth[currentPlayer];
-    const disabled = !!winner || cd > 0 || !!pendingSkill || (aiEnabled && currentPlayer === aiPlayer) || rebirthInvalid || mbLockedByRule;
+    const disabled = !!winner || draw || cd > 0 || !!pendingSkill || (aiEnabled && currentPlayer === aiPlayer) || rebirthInvalid || mbLockedByRule;
     return (
       <Button
         variant={cd > 0 ? 'secondary' : 'default'}
@@ -178,16 +179,16 @@ React.useEffect(() => {
                     <span className="text-sm text-neutral-600 dark:text-neutral-400">当前执子</span>
                     <div className="flex items-center gap-2 text-sm font-medium">
                       <span
-                        className={winner
+                        className={(winner || draw)
                           ? 'text-amber-600 dark:text-amber-400'
                           : currentPlayer === 'black'
                             ? 'text-black dark:text-white'
                             : 'text-neutral-900 dark:text-neutral-100'}
                       >
-                        {playerLabel}{aiEnabled && !winner && currentPlayer === aiPlayer ? '（AI）' : ''}
+                        {playerLabel}{aiEnabled && !winner && !draw && currentPlayer === aiPlayer ? '（AI）' : ''}
                       </span>
                       <span className="inline-flex h-4 w-4 items-center justify-center rounded-full ring-1 ring-neutral-300 dark:ring-neutral-700"
-                        style={{ background: winner ? '#f59e0b' : currentPlayer === 'black' ? '#000' : '#fff' }}
+                        style={{ background: (winner || draw) ? '#f59e0b' : currentPlayer === 'black' ? '#000' : '#fff' }}
                       />
                     </div>
                   </div>
@@ -272,7 +273,7 @@ React.useEffect(() => {
                 </div>
 
                 <div className="flex flex-wrap gap-3">
-                  <Button variant="secondary" onClick={undo} disabled={moves.length === 0 || !!winner}>
+                  <Button variant="secondary" onClick={undo} disabled={moves.length === 0 || !!winner || draw}>
                     <RotateCcw className="mr-2 h-4 w-4" /> 悔棋
                   </Button>
                   <Button variant="outline" onClick={() => reset()}>

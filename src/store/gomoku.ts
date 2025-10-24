@@ -21,6 +21,7 @@ interface GameState {
   moves: Move[];
   currentPlayer: Player;
   winner: Player | null;
+  draw: boolean;
   winningLine: Position[];
   aiEnabled: boolean;
   aiPlayer: Player;
@@ -374,6 +375,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   moves: [],
   currentPlayer: "black",
   winner: null,
+  draw: false,
   winningLine: [],
   aiEnabled: true,
   aiPlayer: "white",
@@ -392,8 +394,8 @@ export const useGameStore = create<GameState>((set, get) => ({
     return !!permBlock[key] || t > 0;
   },
   placeStone: (row, col) => {
-    const { board, currentPlayer, winner, isBlocked, extraTurns, frozenTurns, skillCooldowns, tempBlock, pendingSkill } = get();
-    if (winner || pendingSkill || board[row][col] !== null || isBlocked(row, col)) return;
+    const { board, currentPlayer, winner, draw, isBlocked, extraTurns, frozenTurns, skillCooldowns, tempBlock, pendingSkill } = get();
+    if (winner || draw || pendingSkill || board[row][col] !== null || isBlocked(row, col)) return;
     const nextBoard = board.map((rowArr) => rowArr.slice());
     nextBoard[row][col] = currentPlayer;
     // 在摧毁区上的棋子视为无效，进行胜利判断前清除
@@ -427,11 +429,15 @@ export const useGameStore = create<GameState>((set, get) => ({
       const v = nextTemp[k];
       if (v <= 1) delete nextTemp[k]; else nextTemp[k] = v - 1;
     }
+    // 和棋判定：无胜者且无合法落子点（排除永久封锁与临时封锁）
+    const empties = getEmptyPositions(nextBoard).filter((p) => !isBlocked(p.row, p.col));
+    const isDrawNow = !res.winner && empties.length === 0;
     set((state) => ({
       board: nextBoard,
       moves: [...state.moves, { row, col, player: currentPlayer }],
-      currentPlayer: res.winner ? state.currentPlayer : nextPlayer,
+      currentPlayer: (res.winner || isDrawNow) ? state.currentPlayer : nextPlayer,
       winner: res.winner,
+      draw: isDrawNow,
       winningLine: res.line,
       extraTurns: nextExtra,
       frozenTurns: nextFrozen,
@@ -450,6 +456,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       moves: moves.slice(0, -1),
       currentPlayer: last.player,
       winner: null,
+      draw: false,
       winningLine: [],
     });
   },
@@ -461,6 +468,7 @@ export const useGameStore = create<GameState>((set, get) => ({
       moves: [],
       currentPlayer: "black",
       winner: null,
+      draw: false,
       winningLine: [],
       tempBlock: {},
       permBlock: {},
@@ -479,8 +487,8 @@ export const useGameStore = create<GameState>((set, get) => ({
   setAiEnabled: (enabled) => set({ aiEnabled: enabled }),
   setAiPlayer: (player) => set({ aiPlayer: player }),
   triggerSkill: (id: SkillId) => {
-    const { currentPlayer, skillCooldowns, pendingSkill, winner, aiEnabled, aiPlayer, board, permBlock } = get();
-    if (winner) return;
+    const { currentPlayer, skillCooldowns, pendingSkill, winner, draw, aiEnabled, aiPlayer, board, permBlock } = get();
+    if (winner || draw) return;
     if (aiEnabled && currentPlayer === aiPlayer) return; // AI 回合不可用技能
     if (pendingSkill) return; // 已在选中状态
     if (skillCooldowns[currentPlayer][id] > 0) return; // 冷却中
@@ -590,8 +598,8 @@ export const useGameStore = create<GameState>((set, get) => ({
   },
   cancelSkill: () => set({ pendingSkill: null, skillTargetBuffer: [] }),
   applySkillTarget: (row, col) => {
-    const { pendingSkill, board, currentPlayer, skillTargetBuffer, winner } = get();
-    if (winner) return;
+    const { pendingSkill, board, currentPlayer, skillTargetBuffer, winner, draw } = get();
+    if (winner || draw) return;
     if (!pendingSkill) return;
     const id = pendingSkill.id;
     const key = `${row},${col}`;
@@ -793,8 +801,8 @@ export const useGameStore = create<GameState>((set, get) => ({
     }
   },
   makeAiMove: () => {
-    const { aiEnabled, aiPlayer, currentPlayer, winner, board, isBlocked, frozenTurns } = get();
-    if (!aiEnabled || winner || currentPlayer !== aiPlayer) return;
+    const { aiEnabled, aiPlayer, currentPlayer, winner, draw, board, isBlocked, frozenTurns } = get();
+    if (!aiEnabled || winner || draw || currentPlayer !== aiPlayer) return;
     if (frozenTurns[aiPlayer] > 0) return; // AI 被冻结，跳过回合
     const n = board.length;
     const empties = getEmptyPositions(board).filter((p) => !isBlocked(p.row, p.col));
