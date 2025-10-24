@@ -42,10 +42,11 @@ const bgmRef = React.useRef<HTMLAudioElement | null>(null);
 const interactionPlayRef = React.useRef<(() => void) | undefined>(undefined);
 React.useEffect(() => {
   if (!bgmRef.current) {
-    const a = new Audio('/skill-gomoku.mp3');
+    const a = new Audio('skill-gomoku.mp3');
     a.loop = true;
     a.volume = 0.15;
     a.preload = 'auto';
+    a.muted = true; // 初始静音以满足自动播放策略
     bgmRef.current = a;
   }
   return () => {
